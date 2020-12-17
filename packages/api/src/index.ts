@@ -23,7 +23,7 @@ import url from "url";
 import WebSocket, { Server } from "ws";
 import { createTokens } from "./auth/createTokens";
 import { isAuth } from "./auth/isAuth";
-import { activeSwipesMax, __prod__ } from "./constants";
+import { __prod__ } from "./constants";
 import { createConn } from "./createConn";
 import { Match } from "./entities/Match";
 import { Message } from "./entities/Message";
@@ -459,7 +459,7 @@ const main = async () => {
       }
 
       const myAge = getAge(new Date(user.birthday));
-      const paramNum = user.global ? 6 : 4;
+      const paramNum = 4;
       const loveWhere = `
         and goal = 'love'
         and $${paramNum} = any("gendersToShow")
@@ -467,14 +467,11 @@ const main = async () => {
         and $${paramNum + 2} >= date_part('year', age(birthday))
         and "ageRangeMin" <= $${paramNum + 3}
         and "ageRangeMax" >= $${paramNum + 4}
-        and (location = $${paramNum + 5} ${
-        user.global ? `or global = true` : ""
-      })
         ${
           user.gendersToShow.length
             ? "and (" +
               user.gendersToShow
-                .map((_, i) => `gender = $${paramNum + 6 + i}`)
+                .map((_, i) => `gender = $${paramNum + 5 + i}`)
                 .join(" or ") +
               ")"
             : ""
@@ -484,13 +481,11 @@ const main = async () => {
         req.userId,
         req.userId,
         req.userId,
-        ...(user.global ? [user.location, user.location] : []),
         user.gender, // my gender matches their gender they want to see
         user.ageRangeMin,
         user.ageRangeMax,
         myAge,
         myAge,
-        user.location,
         ...user.gendersToShow,
       ];
       const friendWhere = `and goal = 'friendship' and date_part('year', age(birthday)) ${
@@ -511,21 +506,13 @@ const main = async () => {
         and array_length("codeImgIds", 1) >= 1
         and "shadowBanned" != true
         order by
-          (case
-            ${
-              user.goal === "love" && user.global
-                ? `
-            when (u.location = $4 and v2 is not null)
-            then random() - 1.2
-            when (u.location = $5)
-            then random() - 1
-            `
-                : ""
-            }
-            when (v2 is not null)
-            then random() - .2
-            else random()
-          end) - u."numSwipes" / ${activeSwipesMax}
+          random()
+          - (case
+              when (v2 is not null)
+              then .2
+              else -least(current_timestamp::date - u."lastSwipe"::date, 14) / 14.0
+            end)
+          - LEAST(u."numSwipesToday", 20) / 20.0
         limit 20;
         `,
         user.goal === "love" ? loveParams : friendParams
@@ -560,7 +547,12 @@ const main = async () => {
         end "read",
         ma.id "matchId",
         u.id "userId", u.flair, u."photoUrl", u."displayName", date_part('epoch', ma."createdAt") * 1000 "createdAt",
-        (select json_build_object('text', text, 'createdAt', date_part('epoch', m."createdAt")*1000)
+        (select json_build_object('text',
+        case when char_length(text) > 40
+        then substr(text, 0, 40) || '...'
+        else text
+        end
+        , 'createdAt', date_part('epoch', m."createdAt")*1000)
         from message m
         where (m."recipientId" = ma."userId1" and m."senderId" = ma."userId2")
         or
@@ -929,7 +921,9 @@ const main = async () => {
       }
 
       User.update(req.userId, {
-        numSwipes: () => `LEAST("numSwipes" + 1, ${activeSwipesMax})`,
+        numSwipesToday: () => `"numSwipesToday" + 1`,
+        numSwipes: () => `"numSwipes" + 1`,
+        lastSwipe: () => "CURRENT_TIMESTAMP",
       });
     }
   );
